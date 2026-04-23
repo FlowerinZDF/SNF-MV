@@ -1,0 +1,7 @@
+[project]
+name = "snf-mv"
+description = "Structural News Forensics with Multi-View decomposition and reasoning"
+
+[focus]
+primary_dataset = "weibo"
+legacy_dir = "src/legacy"
