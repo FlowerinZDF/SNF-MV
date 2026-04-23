@@ -1,13 +1,26 @@
+# Python artifacts
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*.so
+
+# Virtual environments
 .venv/
-env/
 venv/
+env/
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .idea/
 .vscode/
+
+# Outputs and generated files
 outputs/
 logs/
 checkpoints/
+*.log
+
+# OS files
 .DS_Store
+Thumbs.db
