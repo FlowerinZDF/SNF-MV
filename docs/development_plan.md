@@ -9,6 +9,10 @@
 
 - Build Weibo raw-to-canonical JSONL conversion pipeline.
 - Add split generation (`train/val/test`) and lightweight validation checks.
+- Current conversion assumptions follow legacy MViR layout:
+  - `raw_root/tweets/{train,test}_{rumor,nonrumor}.txt`
+  - tab-delimited rows where id/text/images/label are parsed from columns `0/1/4/-1`
+  - images searched under `raw_root/rumor_images` and `raw_root/nonrumor_images`
 
 ## Phase 3: Global Baseline
 

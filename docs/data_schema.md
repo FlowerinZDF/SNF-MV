@@ -1,66 +1,54 @@
 # SNF-MV Canonical Data Schema (JSONL)
 
-This document defines the canonical JSONL sample format for SNF-MV experiments.
+This document defines the canonical JSONL sample format for early SNF-MV experiments.
 Each line in a dataset file must be one JSON object.
 
-## Top-level fields
+## Current required fields (Weibo v0 pipeline)
 
-- `sample_id` (string): globally unique sample identifier.
-- `dataset` (string): dataset source, e.g., `"weibo"`.
-- `split` (string): one of `"train"`, `"val"`, `"test"`.
-- `label` (integer): binary label (`0` for real, `1` for fake).
-- `language` (string): language tag, e.g., `"zh"`.
-- `timestamp` (string, optional): ISO-8601 timestamp if available.
-- `content` (object): text and metadata payload.
-- `views` (object): multi-view features (raw or precomputed placeholders).
-- `provenance` (object, optional): crawl/source traceability fields.
+- `id` (string): sample identifier from source dataset.
+- `text` (string): cleaned post text.
+- `image_path` (string): resolved image path (or unresolved image id placeholder if file is missing).
+- `overall_label` (integer): binary label (`0` real, `1` fake).
 
-## `content` object
+## Supported optional structural fields (can be `null` in v0)
 
-- `title` (string)
-- `body` (string)
-- `tokens` (array of string, optional)
-- `entities` (array of string, optional)
-- `hashtags` (array of string, optional)
-
-## `views` object
-
-- `semantic` (object, optional): semantic-view input fields.
-- `style` (object, optional): writing-style view fields.
-- `propagation` (object, optional): social diffusion view fields.
-- `evidence` (object, optional): retrieved evidence view fields.
+- `subject_label`
+- `event_label`
+- `scene_label`
+- `time_label`
+- `subject_event_conflict`
+- `subject_scene_conflict`
+- `event_scene_conflict`
+- `event_time_conflict`
+- `subject_prior`
+- `event_prior`
+- `scene_prior`
+- `time_prior`
 
 ## Example JSONL line
 
 ```json
 {
-  "sample_id": "weibo_000001",
-  "dataset": "weibo",
-  "split": "train",
-  "label": 1,
-  "language": "zh",
-  "timestamp": "2024-04-16T08:15:00Z",
-  "content": {
-    "title": "示例标题",
-    "body": "示例正文内容",
-    "tokens": ["示例", "正文"],
-    "entities": ["实体A"],
-    "hashtags": ["#示例#"]
-  },
-  "views": {
-    "semantic": {"text": "示例正文内容"},
-    "style": {"punct_ratio": 0.12},
-    "propagation": {"repost_count": 18},
-    "evidence": {"urls": []}
-  },
-  "provenance": {
-    "source_platform": "weibo",
-    "source_url": "https://weibo.com/..."
-  }
+  "id": "123456",
+  "text": "示例微博正文",
+  "image_path": ".../rumor_images/abc123.jpg",
+  "overall_label": 1,
+  "subject_label": null,
+  "event_label": null,
+  "scene_label": null,
+  "time_label": null,
+  "subject_event_conflict": null,
+  "subject_scene_conflict": null,
+  "event_scene_conflict": null,
+  "event_time_conflict": null,
+  "subject_prior": null,
+  "event_prior": null,
+  "scene_prior": null,
+  "time_prior": null
 }
 ```
 
 ## Notes
 
-- Keep optional fields present as empty values where feasible for stable parsing.
-- Additional view-specific fields can be appended without breaking compatibility.
+- Keep optional structural fields present as empty values (`null`) for stable parsing.
+- Future schema revisions may additionally include nested metadata blocks for provenance and views.
