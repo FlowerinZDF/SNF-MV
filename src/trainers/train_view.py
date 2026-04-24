@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader, random_split
 from src.datasets.weibo_dataset import WeiboStructuralDataset
 from src.evaluators.metrics import binary_classification_metrics
 from src.models.view_model import ViewModel
+from src.trainers.multimodal import build_model_inputs
 from src.utils.seed import set_seed
 
 
@@ -37,17 +38,26 @@ def train_one_epoch(
     optimizer: torch.optim.Optimizer,
     criterion: nn.Module,
     device: torch.device,
+    *,
+    image_key: str | None,
+    enable_images: bool,
 ) -> float:
     model.train()
     running_loss = 0.0
     seen = 0
 
     for batch in dataloader:
-        texts = [str(text or "") for text in batch["text"]]
         labels = torch.tensor(batch["overall_label"], dtype=torch.long, device=device)
+        model_inputs = build_model_inputs(
+            model,
+            batch,
+            device=device,
+            image_key=image_key,
+            enable_images=enable_images,
+        )
 
         optimizer.zero_grad(set_to_none=True)
-        outputs = model(texts=texts)
+        outputs = model(**model_inputs)
 
         # First runnable path: optimize only overall label objective.
         loss = criterion(outputs["logits"], labels)
@@ -64,17 +74,30 @@ def train_one_epoch(
 
 
 @torch.no_grad()
-def evaluate(model: ViewModel, dataloader: DataLoader, device: torch.device) -> dict[str, float | int]:
+def evaluate(
+    model: ViewModel,
+    dataloader: DataLoader,
+    device: torch.device,
+    *,
+    image_key: str | None,
+    enable_images: bool,
+) -> dict[str, float | int]:
     model.eval()
 
     y_true: list[int] = []
     y_pred: list[int] = []
 
     for batch in dataloader:
-        texts = [str(text or "") for text in batch["text"]]
         labels = [int(x) for x in batch["overall_label"]]
+        model_inputs = build_model_inputs(
+            model,
+            batch,
+            device=device,
+            image_key=image_key,
+            enable_images=enable_images,
+        )
 
-        outputs = model(texts=texts)
+        outputs = model(**model_inputs)
         preds = outputs["predictions"].detach().cpu().tolist()
 
         y_true.extend(labels)
@@ -105,14 +128,26 @@ def _split_train_eval(
 
 
 def run_training(args: argparse.Namespace) -> dict[str, Any]:
+    if not hasattr(args, "enable_images"):
+        args.enable_images = not bool(getattr(args, "disable_images", False))
+    if not hasattr(args, "image_key"):
+        args.image_key = None
+
     set_seed(args.seed)
     device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
 
-    train_dataset_full = WeiboStructuralDataset.from_jsonl(args.train_jsonl)
+    dataset_kwargs = {"load_image_tensors": args.enable_images}
+    try:
+        train_dataset_full = WeiboStructuralDataset.from_jsonl(args.train_jsonl, **dataset_kwargs)
+    except TypeError:
+        train_dataset_full = WeiboStructuralDataset.from_jsonl(args.train_jsonl)
 
     if args.eval_jsonl:
         train_dataset = train_dataset_full
-        eval_dataset = WeiboStructuralDataset.from_jsonl(args.eval_jsonl)
+        try:
+            eval_dataset = WeiboStructuralDataset.from_jsonl(args.eval_jsonl, **dataset_kwargs)
+        except TypeError:
+            eval_dataset = WeiboStructuralDataset.from_jsonl(args.eval_jsonl)
     else:
         train_dataset, eval_dataset = _split_train_eval(train_dataset_full, args.eval_ratio, args.seed)
 
@@ -134,8 +169,22 @@ def run_training(args: argparse.Namespace) -> dict[str, Any]:
     best_state = None
 
     for epoch in range(1, args.epochs + 1):
-        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device)
-        metrics = evaluate(model, eval_loader, device)
+        train_loss = train_one_epoch(
+            model,
+            train_loader,
+            optimizer,
+            criterion,
+            device,
+            image_key=args.image_key,
+            enable_images=args.enable_images,
+        )
+        metrics = evaluate(
+            model,
+            eval_loader,
+            device,
+            image_key=args.image_key,
+            enable_images=args.enable_images,
+        )
         metrics["train_loss"] = train_loss
         metrics["epoch"] = epoch
 
@@ -194,12 +243,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-ratio", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cpu", choices=["cpu", "cuda"])
+    parser.add_argument(
+        "--disable-images",
+        action="store_true",
+        help="Disable image tensor usage even when image tensors are available in the dataset.",
+    )
+    parser.add_argument(
+        "--image-key",
+        default=None,
+        help="Optional batch key for image tensors (auto-detect when omitted).",
+    )
     return parser
 
 
 def main() -> None:
     parser = build_arg_parser()
     args = parser.parse_args()
+    args.enable_images = not args.disable_images
     outputs = run_training(args)
     print(json.dumps(outputs, indent=2))
 
