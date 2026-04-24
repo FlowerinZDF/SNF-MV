@@ -28,7 +28,8 @@ class FullModel(nn.Module):
         self.fusion = nn.Linear(num_classes * 2 + 1, num_classes)
 
     def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        global_logits = self.global_model(x)
+        global_outputs = self.global_model(features=x)
+        global_logits = global_outputs["logits"]
         view_feat = self.view_extractor(x)
         view_logits = self.view_model(view_feat)
         consistency = self.reasoner(view_feat)
@@ -36,6 +37,7 @@ class FullModel(nn.Module):
         final_logits = self.fusion(fused)
         return {
             "global_logits": global_logits,
+            "global_probabilities": global_outputs["probabilities"],
             "view_logits": view_logits,
             "consistency": consistency,
             "final_logits": final_logits,
