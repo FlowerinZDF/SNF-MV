@@ -28,6 +28,9 @@ source .venv/bin/activate
 pip install -r requirements.txt
 python scripts/smoke_test.py
 python -m unittest tests/test_smoke_imports.py
+
+# Optional: split processed Weibo train into train/val
+python scripts/split_weibo_train_val.py --val-ratio 0.1 --seed 42
 ```
 
 ## Notes
