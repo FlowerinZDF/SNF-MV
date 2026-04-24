@@ -75,18 +75,6 @@ def parse_args() -> argparse.Namespace:
         default=Path("data/processed/weibo"),
         help="Directory for split JSONL outputs (default: data/processed/weibo).",
     )
-    parser.add_argument(
-        "--train-output",
-        type=Path,
-        default=None,
-        help="Optional explicit train JSONL path. Overrides --output-dir/train.jsonl.",
-    )
-    parser.add_argument(
-        "--test-output",
-        type=Path,
-        default=None,
-        help="Optional explicit test JSONL path. Overrides --output-dir/test.jsonl.",
-    )
     return parser.parse_args()
 
 
@@ -218,8 +206,8 @@ def convert(raw_root: Path, train_output: Path, test_output: Path) -> tuple[int,
 
 def main() -> None:
     args = parse_args()
-    train_output = args.train_output or (args.output_dir / "train.jsonl")
-    test_output = args.test_output or (args.output_dir / "test.jsonl")
+    train_output = args.output_dir / "train.jsonl"
+    test_output = args.output_dir / "test.jsonl"
 
     train_count, test_count = convert(
         raw_root=args.raw_root,
