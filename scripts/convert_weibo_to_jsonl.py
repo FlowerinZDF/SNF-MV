@@ -1,27 +1,42 @@
 #!/usr/bin/env python3
-"""Convert legacy Weibo raw files into SNF-MV canonical JSONL.
+"""Convert Weibo raw files into SNF-MV canonical JSONL.
 
-Raw-layout assumptions (based on legacy `src/legacy/mvir/data_process_weibo.py`):
-1) Input path contains `tweets/` with files named:
-   - train_rumor.txt, train_nonrumor.txt, test_rumor.txt, test_nonrumor.txt
-2) Each file has a header row and tab-delimited rows where:
-   - column 0 is post id
-   - column 1 is post text
-   - column 4 is image identifier(s), potentially comma-separated
-   - last column is textual label (`fake` or `real`)
-3) Image files may exist under `rumor_images/` and `nonrumor_images/` as
-   `<image_id>.<ext>`.
+Expected raw layout under ``--raw-root``:
+- tweets/train_rumor.txt
+- tweets/train_nonrumor.txt
+- tweets/test_rumor.txt
+- tweets/test_nonrumor.txt
+- rumor_images/
+- nonrumor_images/
 
-If your raw files differ, adapt parsing in `_parse_legacy_line`.
+Each tweets file is parsed as repeated 3-line blocks:
+1) metadata line (pipe-separated, first field used as record id when available)
+2) image URL line (pipe-separated URLs, usually ending with "null")
+3) post text line
+
+Filename drives labels/splits:
+- *rumor* -> overall_label = 1
+- *nonrumor* -> overall_label = 0
+- *train* -> split = "train"
+- *test* -> split = "test"
+
+Image handling:
+- Read image URLs from line 2, pipe-separated.
+- Ignore empty values and "null" (case-insensitive).
+- Use the first remaining URL only.
+- Map basename to:
+  - rumor files    -> <raw-root>/rumor_images/<basename>
+  - nonrumor files -> <raw-root>/nonrumor_images/<basename>
+- If no valid image URL exists, write image_path as null.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import re
 from pathlib import Path
-from typing import Iterable
+from typing import Iterator
+from urllib.parse import urlsplit
 
 EXPECTED_FILES = (
     "train_rumor.txt",
@@ -30,8 +45,20 @@ EXPECTED_FILES = (
     "test_nonrumor.txt",
 )
 
-URL_PATTERN = re.compile(r"https?://\S+")
-
+CANONICAL_NULL_FIELDS = {
+    "subject_label": None,
+    "event_label": None,
+    "scene_label": None,
+    "time_label": None,
+    "subject_event_conflict": None,
+    "subject_scene_conflict": None,
+    "event_scene_conflict": None,
+    "event_time_conflict": None,
+    "subject_prior": None,
+    "event_prior": None,
+    "scene_prior": None,
+    "time_prior": None,
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,113 +67,168 @@ def parse_args() -> argparse.Namespace:
         "--raw-root",
         type=Path,
         required=True,
-        help="Path containing legacy Weibo raw files (tweets/, rumor_images/, nonrumor_images/).",
+        help="Path containing Weibo raw directories (tweets/, rumor_images/, nonrumor_images/).",
     )
     parser.add_argument(
-        "--output",
+        "--output-dir",
         type=Path,
-        required=True,
-        help="Output JSONL path.",
+        default=Path("data/processed/weibo"),
+        help="Directory for split JSONL outputs (default: data/processed/weibo).",
+    )
+    parser.add_argument(
+        "--train-output",
+        type=Path,
+        default=None,
+        help="Optional explicit train JSONL path. Overrides --output-dir/train.jsonl.",
+    )
+    parser.add_argument(
+        "--test-output",
+        type=Path,
+        default=None,
+        help="Optional explicit test JSONL path. Overrides --output-dir/test.jsonl.",
     )
     return parser.parse_args()
 
 
-def _clean_text(text: str) -> str:
-    return URL_PATTERN.sub("", text).strip()
+def _split_from_filename(filename: str) -> str:
+    if filename.startswith("train_"):
+        return "train"
+    if filename.startswith("test_"):
+        return "test"
+    raise ValueError(f"Cannot infer split from filename: {filename}")
 
 
-def _label_to_int(label: str) -> int:
-    lowered = label.strip().lower()
-    if lowered == "fake":
-        return 1
-    if lowered == "real":
+def _overall_label_from_filename(filename: str) -> int:
+    if "nonrumor" in filename:
         return 0
-    raise ValueError(f"Unsupported label: {label}")
+    if "rumor" in filename:
+        return 1
+    raise ValueError(f"Cannot infer label from filename: {filename}")
 
 
-def _resolve_image_path(raw_root: Path, image_id_field: str) -> str:
-    image_candidates = [img_id.strip() for img_id in image_id_field.split(",") if img_id.strip()]
-    if not image_candidates:
-        return ""
-
-    search_dirs = [raw_root / "rumor_images", raw_root / "nonrumor_images"]
-    for image_id in image_candidates:
-        for directory in search_dirs:
-            if not directory.exists():
-                continue
-            # try any extension and also bare filename (some dumps contain extensions already)
-            direct = directory / image_id
-            if direct.exists():
-                return str(direct)
-            matches = list(directory.glob(f"{image_id}.*"))
-            if matches:
-                return str(matches[0])
-
-    # Keep the first id as a placeholder when the image file is not found.
-    return image_candidates[0]
+def _image_dir_from_filename(raw_root: Path, filename: str) -> Path:
+    if "nonrumor" in filename:
+        return raw_root / "nonrumor_images"
+    return raw_root / "rumor_images"
 
 
-def _parse_legacy_line(line: str, raw_root: Path) -> dict[str, object]:
-    fields = line.rstrip("\n").split("\t")
-    if len(fields) < 5:
-        raise ValueError(f"Unexpected line format (<5 tab columns): {line!r}")
+def _basename_from_url(url: str) -> str:
+    parsed = urlsplit(url.strip())
+    return Path(parsed.path).name
 
-    post_id = fields[0].strip()
-    text = _clean_text(fields[1])
-    image_field = fields[4].strip()
-    label = _label_to_int(fields[-1])
 
-    return {
-        "id": post_id,
-        "text": text,
-        "image_path": _resolve_image_path(raw_root, image_field),
-        "overall_label": label,
-        "subject_label": None,
-        "event_label": None,
-        "scene_label": None,
-        "time_label": None,
-        "subject_event_conflict": None,
-        "subject_scene_conflict": None,
-        "event_scene_conflict": None,
-        "event_time_conflict": None,
-        "subject_prior": None,
-        "event_prior": None,
-        "scene_prior": None,
-        "time_prior": None,
+def _parse_image_path(raw_root: Path, filename: str, image_line: str) -> str | None:
+    candidates = [part.strip() for part in image_line.split("|")]
+    valid_urls = [value for value in candidates if value and value.lower() != "null"]
+    if not valid_urls:
+        return None
+
+    basename = _basename_from_url(valid_urls[0])
+    if not basename:
+        return None
+
+    image_path = _image_dir_from_filename(raw_root, filename) / basename
+    return str(image_path)
+
+
+def _record_id_from_metadata(filename: str, block_index: int, metadata_line: str) -> str:
+    first_field = metadata_line.split("|", 1)[0].strip()
+    if first_field:
+        return first_field
+    # Fallback keeps ids deterministic if metadata is missing/blank.
+    return f"{filename}:{block_index}"
+
+
+def _build_record(
+    raw_root: Path,
+    filename: str,
+    block_index: int,
+    metadata_line: str,
+    image_line: str,
+    text_line: str,
+) -> dict[str, object]:
+    record = {
+        "id": _record_id_from_metadata(filename, block_index, metadata_line),
+        "text": text_line.strip(),
+        "image_path": _parse_image_path(raw_root, filename, image_line),
+        "overall_label": _overall_label_from_filename(filename),
+        "split": _split_from_filename(filename),
     }
+    record.update(CANONICAL_NULL_FIELDS)
+    return record
 
 
-def iter_legacy_records(raw_root: Path) -> Iterable[dict[str, object]]:
+def _iter_three_line_blocks(lines: list[str], filename: str) -> Iterator[tuple[int, str, str, str]]:
+    total = len(lines)
+    full_blocks = total // 3
+    remainder = total % 3
+    if remainder:
+        print(
+            f"Warning: {filename} has {remainder} trailing line(s) that do not form a full 3-line sample; ignored."
+        )
+
+    for block_index in range(full_blocks):
+        start = block_index * 3
+        metadata_line = lines[start].rstrip("\n")
+        image_line = lines[start + 1].rstrip("\n")
+        text_line = lines[start + 2].rstrip("\n")
+        yield block_index, metadata_line, image_line, text_line
+
+
+def iter_records(raw_root: Path) -> Iterator[dict[str, object]]:
     tweets_dir = raw_root / "tweets"
-    for name in EXPECTED_FILES:
-        file_path = tweets_dir / name
+
+    for filename in EXPECTED_FILES:
+        file_path = tweets_dir / filename
         if not file_path.exists():
-            # TODO: If a dataset variant omits one split/class file, make this configurable.
+            print(f"Warning: missing input file {file_path}; skipped.")
             continue
 
-        with file_path.open("r", encoding="utf-8") as f:
-            for line_index, line in enumerate(f):
-                if line_index == 0:
-                    continue
-                if not line.strip():
-                    continue
-                yield _parse_legacy_line(line, raw_root)
+        lines = file_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        for block_index, metadata_line, image_line, text_line in _iter_three_line_blocks(lines, filename):
+            yield _build_record(
+                raw_root=raw_root,
+                filename=filename,
+                block_index=block_index,
+                metadata_line=metadata_line,
+                image_line=image_line,
+                text_line=text_line,
+            )
 
 
-def convert(raw_root: Path, output_path: Path) -> int:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    count = 0
-    with output_path.open("w", encoding="utf-8") as out:
-        for record in iter_legacy_records(raw_root):
-            out.write(json.dumps(record, ensure_ascii=False) + "\n")
-            count += 1
-    return count
+def convert(raw_root: Path, train_output: Path, test_output: Path) -> tuple[int, int]:
+    train_output.parent.mkdir(parents=True, exist_ok=True)
+    test_output.parent.mkdir(parents=True, exist_ok=True)
+
+    train_count = 0
+    test_count = 0
+
+    with train_output.open("w", encoding="utf-8") as train_f, test_output.open("w", encoding="utf-8") as test_f:
+        for record in iter_records(raw_root):
+            serialized = json.dumps(record, ensure_ascii=False) + "\n"
+            if record["split"] == "train":
+                train_f.write(serialized)
+                train_count += 1
+            else:
+                test_f.write(serialized)
+                test_count += 1
+
+    return train_count, test_count
 
 
 def main() -> None:
     args = parse_args()
-    num_records = convert(args.raw_root, args.output)
-    print(f"Wrote {num_records} records to {args.output}")
+    train_output = args.train_output or (args.output_dir / "train.jsonl")
+    test_output = args.test_output or (args.output_dir / "test.jsonl")
+
+    train_count, test_count = convert(
+        raw_root=args.raw_root,
+        train_output=train_output,
+        test_output=test_output,
+    )
+
+    print(f"Wrote {train_count} train records to {train_output}")
+    print(f"Wrote {test_count} test records to {test_output}")
 
 
 if __name__ == "__main__":
