@@ -1,13 +1,13 @@
 """Weibo dataset loader for SNF-MV JSONL structural data.
 
 This module intentionally keeps dependencies minimal so that it can be imported
-in early project stages without requiring the training stack.
+in early project stages without requiring the full training stack.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from src.utils.io import read_jsonl
 
@@ -31,27 +31,56 @@ OPTIONAL_STRUCTURAL_FIELDS = (
 class WeiboStructuralDataset:
     """Dataset backed by canonical SNF-MV Weibo JSONL records.
 
-    Expected record shape (first iteration):
+    Expected record shape:
     - required: id, text, image_path, overall_label
     - optional: structural labels/conflicts/priors (filled with ``None`` if absent)
 
-    Image decoding is intentionally left as a future step; callers currently
-    receive ``image_path`` as a string.
+    Image loading is optional. When enabled, ``__getitem__`` returns an extra
+    ``image_tensor`` field and a boolean ``image_loaded`` marker.
     """
 
-    def __init__(self, records: list[dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        load_images: bool = False,
+        image_root: str | Path | None = None,
+        image_transform: Callable[[Any], Any] | None = None,
+    ) -> None:
         self.samples: list[dict[str, Any]] = [self._normalize_record(r) for r in records]
+        self.load_images = load_images
+        self.image_root = Path(image_root) if image_root is not None else None
+        self.image_transform = image_transform
 
     @classmethod
-    def from_jsonl(cls, jsonl_path: str | Path) -> "WeiboStructuralDataset":
+    def from_jsonl(
+        cls,
+        jsonl_path: str | Path,
+        *,
+        load_images: bool = False,
+        image_root: str | Path | None = None,
+        image_transform: Callable[[Any], Any] | None = None,
+    ) -> "WeiboStructuralDataset":
         """Build a dataset from a JSONL file on disk."""
-        return cls(read_jsonl(jsonl_path))
+        return cls(
+            read_jsonl(jsonl_path),
+            load_images=load_images,
+            image_root=image_root,
+            image_transform=image_transform,
+        )
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
-        return self.samples[index]
+        sample = dict(self.samples[index])
+        if not self.load_images:
+            return sample
+
+        image_tensor = self._safe_load_image_tensor(sample.get("image_path"))
+        sample["image_tensor"] = image_tensor
+        sample["image_loaded"] = image_tensor is not None
+        return sample
 
     @staticmethod
     def collate_fn(batch: list[dict[str, Any]]) -> dict[str, list[Any]]:
@@ -81,6 +110,44 @@ class WeiboStructuralDataset:
                 ) from exc
 
         return normalized
+
+    def _resolve_image_path(self, image_path: str | None) -> Path | None:
+        if not image_path:
+            return None
+        path = Path(image_path)
+        if path.is_absolute():
+            return path
+        if self.image_root is not None:
+            return self.image_root / path
+        return path
+
+    def _safe_load_image_tensor(self, image_path: str | None) -> Any | None:
+        resolved = self._resolve_image_path(image_path)
+        if resolved is None or not resolved.exists():
+            return None
+
+        try:
+            from PIL import Image
+            import numpy as np
+            import torch
+
+            image = Image.open(resolved).convert("RGB")
+            if self.image_transform is not None:
+                transformed = self.image_transform(image)
+                if isinstance(transformed, torch.Tensor):
+                    return transformed
+                if isinstance(transformed, np.ndarray):
+                    if transformed.ndim == 3:
+                        transformed = transformed.transpose(2, 0, 1)
+                    return torch.from_numpy(transformed).float()
+                return transformed
+
+            arr = np.array(image, dtype=np.float32) / 255.0
+            tensor = torch.from_numpy(arr).permute(2, 0, 1).contiguous()
+            return tensor
+        except Exception:
+            # Keep loading robust: downstream can still train text-only.
+            return None
 
 
 # Backward-compatible alias for earlier scaffold imports.

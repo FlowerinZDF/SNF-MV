@@ -83,8 +83,9 @@ class FullModel(nn.Module):
         features: torch.Tensor | None = None,
         *,
         texts: Sequence[str] | None = None,
+        images: torch.Tensor | Sequence[torch.Tensor | None] | None = None,
     ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
-        view_outputs = self.view_model(features=features, texts=texts)
+        view_outputs = self.view_model(features=features, texts=texts, images=images)
         reasoner_outputs = self.reasoner(view_outputs["view_features"])
 
         fusion_input = torch.cat(
@@ -112,6 +113,7 @@ class FullModel(nn.Module):
             "global_logits": view_outputs["global_logits"],
             "global_probabilities": view_outputs["global_probabilities"],
             "view_features": view_outputs["view_features"],
+            "shared_representation": view_outputs["shared_representation"],
             # Explicit consistency outputs.
             "pairwise_logits": reasoner_outputs["pairwise_logits"],
             "pairwise_scores": reasoner_outputs["pairwise_scores"],

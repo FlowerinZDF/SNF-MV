@@ -53,7 +53,7 @@ class ViewModel(nn.Module):
             dropout=dropout,
         )
 
-        # Reuse baseline text path and overall classifier design.
+        # Reuse baseline multimodal path and overall classifier design.
         self.global_model = GlobalModel(
             input_dim=input_dim,
             hidden_dim=hidden_dim,
@@ -77,24 +77,26 @@ class ViewModel(nn.Module):
         self,
         features: torch.Tensor | None,
         texts: Sequence[str] | None,
+        images: torch.Tensor | Sequence[torch.Tensor | None] | None,
     ) -> torch.Tensor:
-        if features is None and texts is None:
-            raise ValueError("Either features or texts must be provided.")
+        if features is None and texts is None and images is None:
+            raise ValueError("Provide features or at least one modality input (texts/images).")
 
         if features is not None:
             if features.ndim != 2:
                 raise ValueError(f"Expected [B, D] features, got shape {tuple(features.shape)}")
             return features
 
-        return self.global_model.encode_texts(texts or [])
+        return self.global_model.encode_multimodal(texts=texts, images=images)
 
     def forward(
         self,
         features: torch.Tensor | None = None,
         *,
         texts: Sequence[str] | None = None,
+        images: torch.Tensor | Sequence[torch.Tensor | None] | None = None,
     ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
-        base_repr = self._encode_inputs(features=features, texts=texts)
+        base_repr = self._encode_inputs(features=features, texts=texts, images=images)
         global_outputs = self.global_model(features=base_repr)
 
         extracted = self.view_extractor(base_repr)
@@ -124,4 +126,5 @@ class ViewModel(nn.Module):
             "global_probabilities": global_outputs["probabilities"],
             "view_features": view_features,
             "stacked_view_features": extracted["stacked_view_features"],
+            "shared_representation": base_repr,
         }
